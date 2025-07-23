@@ -41,15 +41,14 @@ export const inboxMessages = async (req, res) => {
         const limit = Math.max(parseInt(req.query.limit) || 10, 1)
         const skip = (page - 1) * limit
 
-        console.log("this is recipient", req.user.id)
 
         const filterRecieveMessages = {
             recipient: req.user.id,
             deletedByRecipient: false,
             isDraft: false,
-            $or:[
-                {snoozedUntil: null},
-                {snoozedUntil: {$lte :new Date()}}
+            $or: [
+                { snoozedUntil: null },
+                { snoozedUntil: { $lte: new Date() } }
             ]
         }
 
@@ -64,6 +63,7 @@ export const inboxMessages = async (req, res) => {
             .lean()
 
         return res.status(200).json({
+            success:true,
             page,
             limit,
             totalMessageCount,
@@ -189,6 +189,57 @@ export const deletedAllMessages = async (req, res) => {
     }
 }
 
+export const bulkDeleteMessages = async (req, res) => {
+    try {
+        const { messageIds } = req.body || {}
+        const userId = req.user.id 
+
+        if(!Array.isArray(messageIds) || messageIds.length === 0){
+            return res.status(404).json({
+                success:false,
+                message:"No message select to be deleted"
+            })
+        }
+
+        const messageDeleteForRecipient = await Message.updateMany({
+            _id: { $in: messageIds },
+            recipient: userId,
+            deletedByRecipient: false
+        },
+            { $set: { deletedByRecipient: true } }
+        );
+       const messageDeleteForSender =  await Message.updateMany({
+            _id: { $in: messageIds },
+            sender: userId,
+            deletedBySender: false
+        },
+            { $set: { deletedBySender: true } }
+        );
+
+       const deleteFromDb =  await Message.deleteMany({
+            _id:{$in: messageIds},
+            deletedByRecipient:true,
+            deletedBySender:true
+        })
+
+        return res.status(200).json({
+            success:true,
+            deletedBySender:messageDeleteForSender.modifiedCount,
+            deletedByRecipient:messageDeleteForRecipient.modifiedCount,
+            deleteFromDB: deleteFromDb.deletedCount,
+
+        })
+
+    } catch (error) {
+        console.log(error)
+        return res.status(500).json({
+            
+            success: false,
+            message: "Internal server error"
+        })
+    }
+}
+
 export const toggleStarMessageById = async (req, res) => {
     try {
         const userId = req.user.id
@@ -214,7 +265,8 @@ export const toggleStarMessageById = async (req, res) => {
         return res.status(200).json({
             success: true,
             messageId: message._id,
-            isStarred: message.isStarred
+            isStarred: message.isStarred,
+            message: `Message ${message.isStarred? "Starred" : "Unstarred"} successfully`
         })
 
     } catch (error) {
@@ -226,10 +278,95 @@ export const toggleStarMessageById = async (req, res) => {
     }
 }
 
+export const bulkStarMessages = async(req, res)=>{
+    try {
+        const  {messageIds} = req.body || {}
+        const   userId = req.user.id
+
+        if (!Array.isArray(messageIds) || messageIds.length === 0) {
+            return res.status(400).json({
+                 success: false, 
+                 message: "No messages selected to star." 
+                });
+        }
+
+
+        const messages = await Message.updateMany({
+            _id: {$in: messageIds},
+            recipient:userId,
+            isStarred:false
+
+        }, {$set: {isStarred: true}}) 
+
+        if(messages.matchedCount === 0){
+            return res.status(404).json({
+                 success:false,
+                 message:"Message not found or you are not the recipient to star these messages"
+            })
+        }
+
+
+        return res.status(200).json({
+            success:true,
+            totalCount:messages.modifiedCount,
+            message:"Messages starred successfully"
+        })
+        
+    } catch (error) {
+        console.log(error)
+        return res.status(500).json({
+            success:false,
+            message:"Internal server error"
+        });
+    }
+};
+
+export const bulkUnStarMessages = async(req, res)=>{
+    try {
+        const  {messageIds} = req.body || {}
+        const   userId = req.user.id
+
+        if (!Array.isArray(messageIds) || messageIds.length === 0) {
+            return res.status(400).json({
+                 success: false, 
+                 message: "No messages selected to Unstar." 
+                });
+        }
+
+
+        const messages = await Message.updateMany({
+            _id: {$in: messageIds},
+            recipient:userId,
+            isStarred:true
+
+        }, {$set: {isStarred: false}}) 
+
+        if(messages.matchedCount === 0){
+            return res.status(404).json({
+                 success:false,
+                 message:"Message not found or you are not the recipient"
+            })
+        }
+
+
+        return res.status(200).json({
+            success:true,
+            totalCount:messages.modifiedCount,
+            message:"Messages Unstarred successfully"
+        })
+        
+    } catch (error) {
+        console.log(error)
+        return res.status(500).json({
+            success:false,
+            message:"Internal server error"
+        });
+    }
+};
+
 export const getAllStarredMessages = async (req, res) => {
     try {
         const userId = req.user.id
-        console.log(userId)
 
         const filter = {
             recipient: userId,
@@ -244,8 +381,8 @@ export const getAllStarredMessages = async (req, res) => {
 
         return res.status(200).json({
             success: true,
-            messages,
-            count: messages.length
+            totalcount: messages.length,
+            messages
         })
 
 
@@ -257,7 +394,7 @@ export const getAllStarredMessages = async (req, res) => {
         })
     }
 }
-
+ 
 export const notifications = async (req, res,) => {
     try {
         const userId = req.user.id
@@ -362,45 +499,5 @@ export const markAsRead = async (req, res) => {
     }
 }
 
-export const toogleSnoozedMessageById = async (req, res) => {
-    try {
-        const messageId = req.params.id
-        const userId = req.user.id
 
 
-        const message = await Message.findById(messageId)
-        if (!message) {
-            return res.status(404).json({
-                success: false,
-                message: "Message not found"
-            })
-        }
-        if (message.sender.equals(userId)) {
-            return res.status(404).json({
-                success: false,
-                message: "You are not allowed to snoozed this message, only recipient can "
-            })
-        }
-        const isCurrentlySnoozed = message.isSnoozed;
-        console.log(isCurrentlySnoozed)
-
-        message.isSnoozed = !isCurrentlySnoozed;
-        message.snoozedUntil = isCurrentlySnoozed ? null : new Date(req.body.snoozed)
-        await message.save()
-
-        return res.status(200).json({
-            success: false,
-            message: `Message ${isCurrentlySnoozed ? "unsnoozed" : "snoozed"} successfully`,
-            data:message
-        }) 
-
- 
-
-    } catch (error) { 
-        console.log(error)
-        return res.status(500).json({ 
-            success: false,
-            message: "Internal serer error"
-        })
-    }
-}
